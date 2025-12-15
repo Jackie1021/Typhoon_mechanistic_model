@@ -4,7 +4,6 @@ functions {
     vector[size(t)] b_spline;
     vector[size(t)] w1 = rep_vector(0, size(t));
     vector[size(t)] w2 = rep_vector(0, size(t));
-    
     if (order == 1) {
       for (i in 1:size(t))
         b_spline[i] = (ext_knots[ind] <= t[i]) && (t[i] < ext_knots[ind+1]);
@@ -30,12 +29,14 @@ data {
   int<lower=0> num_knots;
   int<lower=2> spline_degree;
   real<lower=0> population;
+  real<lower=0> child_ratio; // NEW: Ratio of children in population for HFMD
   int<lower=0> typhoon_weeks;
   
   // NEW: Week indices for attack rate periods (now can extend into forecast)
-  int<lower=1> period1_start_week;           // Can be in historical period
+  int<lower=1> period1_start_week;
   int<lower=1> period1_end_week;             // Can be in historical OR forecast period
-  int<lower=0> period2_additional_weeks;     // Additional weeks beyond period1_end_week
+  int<lower=0> period2_additional_weeks;
+  // Additional weeks beyond period1_end_week
 }
 
 transformed data {
@@ -44,13 +45,11 @@ transformed data {
   int T_days_forecast = T_weeks_forecast * 7;
   int T_days_total = T_weeks_total * 7;
   int num_basis = num_knots + spline_degree - 1;
-  
   real X[T_days];
   vector[num_knots] knots;
   matrix[num_basis, T_days] B;
   vector[spline_degree + num_knots] ext_knots_temp;
   vector[2*spline_degree + num_knots] ext_knots;
-  
   for (t in 1:T_days) {
     X[t] = (t - 1.0) / (T_days - 1.0);
   }
@@ -61,7 +60,6 @@ transformed data {
   
   ext_knots_temp = append_row(rep_vector(knots[1], spline_degree), knots);
   ext_knots = append_row(ext_knots_temp, rep_vector(knots[num_knots], spline_degree));
-  
   for (ind in 1:num_basis) {
     B[ind, :] = to_row_vector(build_b_spline(X, to_array_1d(ext_knots), ind, spline_degree + 1));
   }
@@ -83,7 +81,7 @@ parameters {
   vector<lower=0,upper=0.05>[N_strains] mu;
   
   vector<lower=0,upper=1>[5] detection_rate;
-  real<lower=0,upper=0.01> hospitalization_rate;
+  real<lower=0.1,upper=1> hospitalization_rate;
   vector<lower=0>[N_strains] phi;
 }
 
@@ -119,7 +117,6 @@ transformed parameters {
   
   for (i in 1:N_strains) {
     vector[T_days] log_R0_t = to_vector(log_R0_spline_coeff[i] * B);
-    
     for (t in 1:T_days) {
       R0_t[i,t] = exp(log_R0_t[t]);
       R0_t[i,t] = fmax(0.5, fmin(10.0, R0_t[i,t]));
@@ -150,7 +147,6 @@ transformed parameters {
     
     for (i in 1:N_strains) {
       lambda[i] = transmission_rate[i,t] * I[i];
-      
       real effective_S = S;
       
       for (j in 1:N_strains) {
@@ -172,7 +168,6 @@ transformed parameters {
       
       vector[19] new_state = to_vector(states[t,]);
       new_state[1] = S + dt * dS;
-      
       for (i in 1:N_strains) {
         int e_idx = 2 + 3*(i-1);
         int i_idx = 3 + 3*(i-1);
@@ -181,7 +176,6 @@ transformed parameters {
         real dE = new_infections[i] - sigma[i] * E[i];
         real dI = sigma[i] * E[i] - gamma[i] * I[i];
         real dR = gamma[i] * I[i] - mu[i] * R[i];
-        
         new_state[e_idx] = E[i] + dt * dE;
         new_state[i_idx] = I[i] + dt * dI;
         new_state[r_idx] = R[i] + dt * dR;
@@ -219,7 +213,6 @@ transformed parameters {
 
 model {
   init_state ~ dirichlet(rep_vector(1.0, 19));
-  
   log_R0_spline_coeff[1] ~ normal(0.55, 0.4);
   log_R0_spline_coeff[2] ~ normal(0.65, 0.4);
   log_R0_spline_coeff[3] ~ normal(0.57, 0.4);
@@ -231,7 +224,6 @@ model {
   cross_immunity_flu_covid ~ beta(1, 5);
   cross_immunity_flu_rsv ~ beta(1, 5);
   cross_immunity_covid_rsv ~ beta(1, 6);
-  
   for (i in 1:N_strains) {
     if (i <= 3) {
       sigma[i] ~ beta(2, 2);
@@ -256,31 +248,29 @@ model {
   mu[6] ~ exponential(200);
   
   detection_rate[1] ~ beta(2, 8);
-  detection_rate[2] ~ beta(3, 7);
+  detection_rate[2] ~ beta(5, 5);
   detection_rate[3] ~ beta(3, 7);
   detection_rate[4] ~ beta(5, 5);
   detection_rate[5] ~ beta(2, 8);
-  hospitalization_rate ~ beta(1, 99);
-  
+  hospitalization_rate ~ beta(6, 4);
+
   phi[1] ~ gamma(5, 0.5);
   phi[2] ~ gamma(5, 0.5);
   phi[3] ~ gamma(5, 0.5);
   phi[4] ~ gamma(8, 1);
   phi[5] ~ gamma(5, 0.5);
   phi[6] ~ gamma(3, 0.3);
-  
   for (w in 1:T_weeks) {
     for (i in 1:N_strains) {
       real expected_cases;
-      
       if (i <= 5) {
         expected_cases = weekly_incidence[i][w] * population * detection_rate[i];
       } else {
-        expected_cases = weekly_incidence[i][w] * population * hospitalization_rate;
+        // MODIFIED: HFMD (i=6) uses child ratio
+        expected_cases = weekly_incidence[i][w] * population * child_ratio * hospitalization_rate;
       }
       
       expected_cases = fmax(0.1, expected_cases);
-      
       if (cases[w,i] >= 0) {
         cases[w,i] ~ neg_binomial_2(expected_cases, phi[i]);
       }
@@ -292,7 +282,6 @@ generated quantities {
   
   int pred_cases[T_weeks, N_strains];
   matrix[T_weeks, N_strains] log_lik;
-  
   matrix[T_days_total, N_strains] R_eff_daily;
   matrix[T_weeks_total, N_strains] R_eff;
   
@@ -330,16 +319,13 @@ generated quantities {
   real attack_rate_period2_baseline[N_strains];
   real attack_rate_period2_scenarios[47, N_strains];
   real attack_rate_period2_extended[281, N_strains];
-  
   // Define scenario parameters
   {
     typhoon_effects[1] = 0.0;
     typhoon_days_arr[1] = 0;
     shift_arr[1] = 0;
-    
     real intensities[10] = {-0.50, -0.30, -0.20, -0.10, -0.05, 0.05, 0.10, 0.20, 0.30, 0.50};
     int durations[4] = {3, 7, 10, 14};
-    
     for (dur_idx in 1:4) {
       for (int_idx in 1:10) {
         int idx = 1 + (dur_idx-1)*10 + int_idx;
@@ -362,7 +348,6 @@ generated quantities {
   for (t in 1:T_days) {
     for (i in 1:N_strains) {
       real S_eff = states[t,1];
-      
       for (j in 1:N_strains) {
         if (j != i) {
           int r_idx = 4 + 3*(j-1);
@@ -405,7 +390,6 @@ generated quantities {
     vector[N_strains] R;
     vector[N_strains] lambda;
     vector[N_strains] new_infections;
-    
     for (i in 1:N_strains) {
       int e_idx = 2 + 3*(i-1);
       int i_idx = 3 + 3*(i-1);
@@ -417,7 +401,6 @@ generated quantities {
     
     for (i in 1:N_strains) {
       lambda[i] = transmission_rate_forecast[i, t_rel] * I[i];
-      
       real effective_S = S;
       for (j in 1:N_strains) {
         if (j != i) {
@@ -450,7 +433,6 @@ generated quantities {
       
       vector[19] new_state = to_vector(states_forecast[t,]);
       new_state[1] = S + dt * dS;
-      
       for (i in 1:N_strains) {
         int e_idx = 2 + 3*(i-1);
         int i_idx = 3 + 3*(i-1);
@@ -459,7 +441,6 @@ generated quantities {
         real dE = new_infections[i] - sigma[i] * E[i];
         real dI = sigma[i] * E[i] - gamma[i] * I[i];
         real dR = gamma[i] * I[i] - mu[i] * R[i];
-        
         new_state[e_idx] = E[i] + dt * dE;
         new_state[i_idx] = I[i] + dt * dI;
         new_state[r_idx] = R[i] + dt * dR;
@@ -506,17 +487,16 @@ generated quantities {
   for (w in 1:T_weeks) {
     for (i in 1:N_strains) {
       real expected_cases;
-      
       if (i <= 5) {
         expected_cases = weekly_incidence[i][w] * population * detection_rate[i];
       } else {
-        expected_cases = weekly_incidence[i][w] * population * hospitalization_rate;
+        // MODIFIED: HFMD uses child ratio
+        expected_cases = weekly_incidence[i][w] * population * child_ratio * hospitalization_rate;
       }
       
       expected_cases = fmax(0.1, expected_cases);
       
       pred_cases[w,i] = neg_binomial_2_rng(expected_cases, phi[i]);
-      
       if (cases[w,i] >= 0) {
         log_lik[w,i] = neg_binomial_2_lpmf(cases[w,i] | expected_cases, phi[i]);
       } else {
@@ -544,7 +524,8 @@ generated quantities {
       if (i <= 5) {
         expected_cases = weekly_incidence_forecast[i][w] * population * detection_rate[i];
       } else {
-        expected_cases = weekly_incidence_forecast[i][w] * population * hospitalization_rate;
+        // MODIFIED: HFMD uses child ratio
+        expected_cases = weekly_incidence_forecast[i][w] * population * child_ratio * hospitalization_rate;
       }
       expected_cases = fmax(0.1, expected_cases);
       forecast_cases[w, i] = neg_binomial_2_rng(expected_cases, phi[i]);
@@ -589,11 +570,9 @@ generated quantities {
       }
     }
     attack_rate_period1_baseline[i] = cumulative_period1;
-    
     // Period 2: Period 1 + additional weeks
     cumulative_period2 = cumulative_period1;
     int period2_end_week = period1_end_week + period2_additional_weeks;
-    
     for (w in (period1_end_week + 1):period2_end_week) {
       if (w <= T_weeks) {
         cumulative_period2 += weekly_incidence[i][w];
@@ -615,7 +594,6 @@ generated quantities {
     matrix[T_days_total + 1, 19] states_typhoon;
     vector[T_days_forecast] daily_incidence_typhoon[N_strains];
     matrix[T_days_forecast, N_strains] R_eff_daily_scenario;
-    
     for (i in 1:N_strains) {
       daily_incidence_typhoon[i] = rep_vector(0, T_days_forecast);
     }
@@ -635,9 +613,7 @@ generated quantities {
         vector[N_strains] R;
         vector[N_strains] lambda;
         vector[N_strains] new_infections;
-        
         real modification_factor = ((t_rel > shift) && (t_rel <= shift + typhoon_days)) ? 1.0 + typhoon_change : 1.0;
-        
         for (i in 1:N_strains) {
           int e_idx = 2 + 3*(i-1);
           int i_idx = 3 + 3*(i-1);
@@ -649,7 +625,6 @@ generated quantities {
         
         for (i in 1:N_strains) {
           lambda[i] = transmission_rate_forecast[i, t_rel] * modification_factor * I[i];
-          
           real effective_S = S;
           for (j in 1:N_strains) {
             if (j != i) {
@@ -682,7 +657,6 @@ generated quantities {
           
           vector[19] new_state = to_vector(states_typhoon[t,]);
           new_state[1] = S + dt * dS;
-          
           for (i in 1:N_strains) {
             int e_idx = 2 + 3*(i-1);
             int i_idx = 3 + 3*(i-1);
@@ -691,7 +665,6 @@ generated quantities {
             real dE = new_infections[i] - sigma[i] * E[i];
             real dI = sigma[i] * E[i] - gamma[i] * I[i];
             real dR = gamma[i] * I[i] - mu[i] * R[i];
-            
             new_state[e_idx] = E[i] + dt * dE;
             new_state[i_idx] = I[i] + dt * dI;
             new_state[r_idx] = R[i] + dt * dR;
@@ -717,7 +690,6 @@ generated quantities {
       int pre_days = -shift;
       int start_historical = T_days - pre_days + 1;
       vector[19] current_state = to_vector(states[start_historical, ]);
-      
       for (pre_t in 1:pre_days) {
         int historical_t = start_historical + pre_t - 1;
         real S = current_state[1];
@@ -728,7 +700,6 @@ generated quantities {
         vector[N_strains] new_infections;
         
         real modification_factor = 1.0 + typhoon_change;
-        
         for (i in 1:N_strains) {
           int e_idx = 2 + 3*(i-1);
           int i_idx = 3 + 3*(i-1);
@@ -740,7 +711,6 @@ generated quantities {
         
         for (i in 1:N_strains) {
           lambda[i] = transmission_rate[i, historical_t] * modification_factor * I[i];
-          
           real effective_S = S;
           for (j in 1:N_strains) {
             if (j != i) {
@@ -759,7 +729,6 @@ generated quantities {
           
           vector[19] new_state = current_state;
           new_state[1] = S + dt * dS;
-          
           for (i in 1:N_strains) {
             int e_idx = 2 + 3*(i-1);
             int i_idx = 3 + 3*(i-1);
@@ -768,7 +737,6 @@ generated quantities {
             real dE = new_infections[i] - sigma[i] * E[i];
             real dI = sigma[i] * E[i] - gamma[i] * I[i];
             real dR = gamma[i] * I[i] - mu[i] * R[i];
-            
             new_state[e_idx] = E[i] + dt * dE;
             new_state[i_idx] = I[i] + dt * dI;
             new_state[r_idx] = R[i] + dt * dR;
@@ -794,7 +762,6 @@ generated quantities {
       }
       
       int remaining_days = typhoon_days - pre_days;
-      
       for (t_rel in 1:T_days_forecast) {
         int t = T_days + t_rel;
         real S = states_typhoon[t, 1];
@@ -803,9 +770,7 @@ generated quantities {
         vector[N_strains] R;
         vector[N_strains] lambda;
         vector[N_strains] new_infections;
-        
         real modification_factor = (t_rel <= remaining_days) ? 1.0 + typhoon_change : 1.0;
-        
         for (i in 1:N_strains) {
           int e_idx = 2 + 3*(i-1);
           int i_idx = 3 + 3*(i-1);
@@ -817,7 +782,6 @@ generated quantities {
         
         for (i in 1:N_strains) {
           lambda[i] = transmission_rate_forecast[i, t_rel] * modification_factor * I[i];
-          
           real effective_S = S;
           for (j in 1:N_strains) {
             if (j != i) {
@@ -850,7 +814,6 @@ generated quantities {
           
           vector[19] new_state = to_vector(states_typhoon[t,]);
           new_state[1] = S + dt * dS;
-          
           for (i in 1:N_strains) {
             int e_idx = 2 + 3*(i-1);
             int i_idx = 3 + 3*(i-1);
@@ -859,7 +822,6 @@ generated quantities {
             real dE = new_infections[i] - sigma[i] * E[i];
             real dI = sigma[i] * E[i] - gamma[i] * I[i];
             real dR = gamma[i] * I[i] - mu[i] * R[i];
-            
             new_state[e_idx] = E[i] + dt * dE;
             new_state[i_idx] = I[i] + dt * dI;
             new_state[r_idx] = R[i] + dt * dR;
@@ -931,7 +893,8 @@ generated quantities {
         if (i <= 5) {
           expected_cases = weekly_inc * population * detection_rate[i];
         } else {
-          expected_cases = weekly_inc * population * hospitalization_rate;
+          // MODIFIED: HFMD uses child ratio
+          expected_cases = weekly_inc * population * child_ratio * hospitalization_rate;
         }
         
         expected_cases = fmax(0.1, expected_cases);
@@ -947,7 +910,6 @@ generated quantities {
       }
       
       cases_typhoon_period[typhoon_idx, i] = typhoon_total;
-      
       if (typhoon_idx == 1) {
         cases_baseline_typhoon_period[i] = typhoon_total;
       }
@@ -963,7 +925,6 @@ generated quantities {
       int n_recovery = T_weeks_forecast - typhoon_weeks;
       avg_weekly_typhoon[typhoon_idx, i] = typhoon_total / typhoon_weeks;
       avg_weekly_recovery[typhoon_idx, i] = recovery_total / n_recovery;
-      
       // Attack rate for this scenario (original definition)
       attack_rate_scenarios[typhoon_idx, i] = attack_rate_baseline[i] + cumulative_incidence_scenario;
       attack_rate_diff[typhoon_idx, i] = attack_rate_scenarios[typhoon_idx, i] - attack_rate_baseline[i];
@@ -993,7 +954,6 @@ generated quantities {
         }
       }
       attack_rate_period1_scenarios[typhoon_idx, i] = cumulative_period1_scenario;
-      
       // Period 2: Period 1 + additional weeks
       cumulative_period2_scenario = cumulative_period1_scenario;
       int period2_end_week = period1_end_week + period2_additional_weeks;
@@ -1024,19 +984,17 @@ generated quantities {
     int durations[4] = {3, 7, 10, 14};
     real intensities[10] = {-0.50, -0.30, -0.20, -0.10, -0.05, 0.05, 0.10, 0.20, 0.30, 0.50};
     int shifts[7] = {-7, -5, -3, 0, 3, 5, 7};
-    
     // Baseline (idx=1)
     for (i in 1:N_strains) {
       cases_extended_typhoon[1, i] = cases_baseline_typhoon_period[i];
       incidence_per10k_extended[1, i] = (cases_baseline_typhoon_period[i] / population) * 10000;
       reduction_extended_typhoon[1, i] = 0.0;
-      
       // NEW: Attack rates for baseline
       attack_rate_period1_extended[1, i] = attack_rate_period1_baseline[i];
       attack_rate_period2_extended[1, i] = attack_rate_period2_baseline[i];
     }
     
-    // All 280 combinations (4 Ã 10 Ã 7)
+    // All 280 combinations (4 Ã— 10 Ã— 7)
     for (dur_idx in 1:4) {
       for (int_idx in 1:10) {
         for (shift_idx in 1:7) {
@@ -1047,7 +1005,6 @@ generated quantities {
           
           matrix[T_days_total + 1, 19] states_typhoon_ext;
           vector[T_days_forecast] daily_incidence_ext[N_strains];
-          
           for (i in 1:N_strains) {
             daily_incidence_ext[i] = rep_vector(0, T_days_forecast);
           }
@@ -1067,9 +1024,7 @@ generated quantities {
               vector[N_strains] R;
               vector[N_strains] lambda;
               vector[N_strains] new_infections;
-              
               real modification_factor = ((t_rel > shift_ext) && (t_rel <= shift_ext + typhoon_days_ext)) ? 1.0 + typhoon_change_ext : 1.0;
-              
               for (i in 1:N_strains) {
                 int e_idx = 2 + 3*(i-1);
                 int i_idx = 3 + 3*(i-1);
@@ -1081,7 +1036,6 @@ generated quantities {
               
               for (i in 1:N_strains) {
                 lambda[i] = transmission_rate_forecast[i, t_rel] * modification_factor * I[i];
-                
                 real effective_S = S;
                 for (j in 1:N_strains) {
                   if (j != i) {
@@ -1101,7 +1055,6 @@ generated quantities {
                 
                 vector[19] new_state = to_vector(states_typhoon_ext[t,]);
                 new_state[1] = S + dt * dS;
-                
                 for (i in 1:N_strains) {
                   int e_idx = 2 + 3*(i-1);
                   int i_idx = 3 + 3*(i-1);
@@ -1110,7 +1063,6 @@ generated quantities {
                   real dE = new_infections[i] - sigma[i] * E[i];
                   real dI = sigma[i] * E[i] - gamma[i] * I[i];
                   real dR = gamma[i] * I[i] - mu[i] * R[i];
-                  
                   new_state[e_idx] = E[i] + dt * dE;
                   new_state[i_idx] = I[i] + dt * dI;
                   new_state[r_idx] = R[i] + dt * dR;
@@ -1137,7 +1089,6 @@ generated quantities {
             int pre_days = -shift_ext;
             int start_historical = T_days - pre_days + 1;
             vector[19] current_state = to_vector(states[start_historical, ]);
-            
             for (pre_t in 1:pre_days) {
               int historical_t = start_historical + pre_t - 1;
               real S = current_state[1];
@@ -1148,7 +1099,6 @@ generated quantities {
               vector[N_strains] new_infections;
               
               real modification_factor = 1.0 + typhoon_change_ext;
-              
               for (i in 1:N_strains) {
                 int e_idx = 2 + 3*(i-1);
                 int i_idx = 3 + 3*(i-1);
@@ -1160,7 +1110,6 @@ generated quantities {
               
               for (i in 1:N_strains) {
                 lambda[i] = transmission_rate[i, historical_t] * modification_factor * I[i];
-                
                 real effective_S = S;
                 for (j in 1:N_strains) {
                   if (j != i) {
@@ -1179,7 +1128,6 @@ generated quantities {
                 
                 vector[19] new_state = current_state;
                 new_state[1] = S + dt * dS;
-                
                 for (i in 1:N_strains) {
                   int e_idx = 2 + 3*(i-1);
                   int i_idx = 3 + 3*(i-1);
@@ -1188,7 +1136,6 @@ generated quantities {
                   real dE = new_infections[i] - sigma[i] * E[i];
                   real dI = sigma[i] * E[i] - gamma[i] * I[i];
                   real dR = gamma[i] * I[i] - mu[i] * R[i];
-                  
                   new_state[e_idx] = E[i] + dt * dE;
                   new_state[i_idx] = I[i] + dt * dI;
                   new_state[r_idx] = R[i] + dt * dR;
@@ -1214,7 +1161,6 @@ generated quantities {
             }
             
             int remaining_days = typhoon_days_ext - pre_days;
-            
             for (t_rel in 1:T_days_forecast) {
               int t = T_days + t_rel;
               real S = states_typhoon_ext[t, 1];
@@ -1223,9 +1169,7 @@ generated quantities {
               vector[N_strains] R;
               vector[N_strains] lambda;
               vector[N_strains] new_infections;
-              
               real modification_factor = (t_rel <= remaining_days) ? 1.0 + typhoon_change_ext : 1.0;
-              
               for (i in 1:N_strains) {
                 int e_idx = 2 + 3*(i-1);
                 int i_idx = 3 + 3*(i-1);
@@ -1237,7 +1181,6 @@ generated quantities {
               
               for (i in 1:N_strains) {
                 lambda[i] = transmission_rate_forecast[i, t_rel] * modification_factor * I[i];
-                
                 real effective_S = S;
                 for (j in 1:N_strains) {
                   if (j != i) {
@@ -1257,7 +1200,6 @@ generated quantities {
                 
                 vector[19] new_state = to_vector(states_typhoon_ext[t,]);
                 new_state[1] = S + dt * dS;
-                
                 for (i in 1:N_strains) {
                   int e_idx = 2 + 3*(i-1);
                   int i_idx = 3 + 3*(i-1);
@@ -1266,7 +1208,6 @@ generated quantities {
                   real dE = new_infections[i] - sigma[i] * E[i];
                   real dI = sigma[i] * E[i] - gamma[i] * I[i];
                   real dR = gamma[i] * I[i] - mu[i] * R[i];
-                  
                   new_state[e_idx] = E[i] + dt * dE;
                   new_state[i_idx] = I[i] + dt * dI;
                   new_state[r_idx] = R[i] + dt * dR;
@@ -1309,7 +1250,8 @@ generated quantities {
               if (i <= 5) {
                 expected_cases = weekly_inc * population * detection_rate[i];
               } else {
-                expected_cases = weekly_inc * population * hospitalization_rate;
+                // MODIFIED: HFMD uses child ratio
+                expected_cases = weekly_inc * population * child_ratio * hospitalization_rate;
               }
               
               expected_cases = fmax(0.1, expected_cases);
@@ -1341,7 +1283,6 @@ generated quantities {
               }
             }
             attack_rate_period1_extended[scenario_idx, i] = cumulative_period1_ext;
-            
             // Period 2: Period 1 + additional weeks
             cumulative_period2_ext = cumulative_period1_ext;
             int period2_end_week = period1_end_week + period2_additional_weeks;
@@ -1364,7 +1305,6 @@ generated quantities {
               }
             }
             attack_rate_period2_extended[scenario_idx, i] = cumulative_period2_ext;
-            
             // Original typhoon period calculations
             cases_extended_typhoon[scenario_idx, i] = typhoon_total_ext;
             incidence_per10k_extended[scenario_idx, i] = (typhoon_total_ext / population) * 10000;
@@ -1382,4 +1322,4 @@ generated quantities {
       }
     }
   }
-}          
+}

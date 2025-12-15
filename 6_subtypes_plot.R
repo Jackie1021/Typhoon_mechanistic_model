@@ -127,7 +127,7 @@ stan_data <- list(
   spline_degree = 3,
   population = 7524000,
   typhoon_weeks = typhoon_weeks,
-  
+  child_ratio = 0.029, # 新增：这里传入了孩童比例 0.029
   # NEW: Modified attack rate period parameters
   period1_start_week = period1_start_week,
   period1_end_week = period1_end_week,  # 现在可以 > T_weeks
@@ -183,22 +183,22 @@ cat("Note: Computing 47 main scenarios + 281 extended scenarios\n")
 cat("Plus attack rates for two specific time periods (can extend into forecast)\n\n")
 
 # Uncomment to run new fit:
-fit <- sampling(
-  model,
-  data = stan_data,
-  iter = 200,
-  warmup = 100,
-  chains = 2,
-  thin = 1,
-  cores = 4,
-  control = list(adapt_delta = 0.8, max_treedepth = 15)
-)
+# fit <- sampling(
+#   model,
+#   data = stan_data,
+#   iter = 200,
+#   warmup = 100,
+#   chains = 2,
+#   thin = 1,
+#   cores = 4,
+#   control = list(adapt_delta = 0.8, max_treedepth = 15)
+# )
 # 
 # saveRDS(fit, file = "/Users/chenjiaqi/Desktop/COVID-19_HK/typhoon/typhoon_model_fit_attack_rate_flexible.rds")
 
 # Or load previous fit:
 # cat("=== LOADING PREVIOUS FIT ===\n")
-fit <- readRDS("/Users/chenjiaqi/SPH Dropbox/Jackie Chen/rds/typhoon_model_fit_attack_rate.rds")
+fit <- readRDS("/Users/chenjiaqi/SPH Dropbox/Jackie Chen/rds/typhoon_model_fit_attack_rate_1.rds")
 
 
 #saveRDS(fit, file = "/Users/chenjiaqi/Desktop/COVID-19_HK/typhoon/typhoon_model_fit_attack_rate.rds")
@@ -429,6 +429,16 @@ incidence_per10k_mean <- apply(incidence_per10k_extended, c(2,3), mean)
 reduction_extended_mean <- apply(reduction_extended, c(2,3), mean)
 
 cat("Statistics calculated successfully\n\n")
+
+
+
+
+
+
+
+
+
+
 
 # ============================================================================
 # PREPARE VISUALIZATION DATA
@@ -1022,6 +1032,19 @@ p3_3days <- ggplot(forecast_3days, aes(x = date, y = predicted, color = scenario
 
 print(p3_3days)
 ggsave("figure3_typhoon_forecasts_3days.png", p3_3days, width = 14, height = 10, dpi = 300, bg = "white")
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # FIGURE 4: 7 days duration
 cat("\n=== Creating Figure 4: Baseline vs Typhoon Forecasts - 7 days (WITH CONTINUITY) ===\n")
@@ -3035,154 +3058,224 @@ ggsave(
 cat("Figure 16B saved: figure16b_attack_rate_period2_sunburst.png\n\n")
 
 # ============================================================================
-# FIGURE 16C: HEATMAP for Period 1 Attack Rates
-# (2025-07-12 to 2025-09-27 - Before Typhoon)
+# HELPER FUNCTION: High Distinction & Aesthetic Heatmap (Viridis/Magma)
 # ============================================================================
-cat("\n=== Creating Figure 16C: Attack Rate Heatmap - Period 1 (Before Typhoon) ===\n")
+# ============================================================================
+# HELPER FUNCTION: High Contrast Heatmap for Clear Trends
+# ============================================================================
+# BEAUTIFIED HEATMAP VISUALIZATION CODE (FIGURE 16C & 16D)
+# Independent Color Scales per Strain | Direct Screen Output (No Save)
+# ============================================================================
 
-# Prepare heatmap data for Period 1
+# Ensure necessary libraries are loaded
+# library(ggplot2)
+# library(patchwork)
+# library(scales)
+# library(dplyr) # Ensure dplyr is loaded for data manipulation
+
+# ============================================================================
+# HELPER FUNCTION: Create Aesthetic Single Strain Heatmap
+# This function generates a professional heatmap for a single strain with its own color scale.
+# ============================================================================
+create_aesthetic_heatmap_nosave <- function(data_df, current_strain, plot_title_suffix = "") {
+  
+  # 1. Filter Data for the specific strain
+  sub_data <- subset(data_df, strain == current_strain)
+  
+  # 2. Calculate Dynamic Limits for Independent Color Scale
+  min_ar <- min(sub_data$attack_rate, na.rm = TRUE)
+  max_ar <- max(sub_data$attack_rate, na.rm = TRUE)
+  
+  # 3. Intelligent Text Color Contrast Logic
+  # Handle Constant Data (e.g., historical period 1) to avoid divide-by-zero errors
+  if (abs(max_ar - min_ar) < 1e-9) {
+    # If data is constant, create a small dummy range for the scale and default text to black
+    fill_limits <- c(min_ar * 0.9, min_ar * 1.1)
+    if(min_ar == 0) fill_limits <- c(0, 1)
+    sub_data$text_color <- "black" 
+  } else {
+    # Data varies. Set limits to min/max.
+    fill_limits <- c(min_ar, max_ar)
+    # Calculate normalized value (0 to 1) to determine background darkness.
+    # If near the ends (dark blue/dark red), use white text. Middle (yellowish) gets black text.
+    norm_val <- (sub_data$attack_rate - min_ar) / (max_ar - min_ar)
+    # Thresholds: bottom 30% and top 30% get white text
+    sub_data$text_color <- ifelse(norm_val < 0.3 | norm_val > 0.7, "white", "black")
+  }
+  
+  # 4. Create the Plot
+  p <- ggplot(sub_data, aes(x = shift, y = intensity, fill = attack_rate)) +
+    # Use thin white borders for a clean, tiled look
+    geom_tile(color = "white", size = 0.2) +
+    
+    # Add text labels with dynamically calculated color contrast
+    geom_text(aes(label = sprintf("%.1f", attack_rate), color = text_color), 
+              size = 2.0, fontface = "plain") +
+    
+    # Map the identity of the calculated text colors so ggplot uses them directly
+    scale_color_identity() +
+    
+    # Facet ONLY by Duration (rows). Strain is handled by separate plots.
+    facet_grid(duration ~ ., labeller = labeller(duration = function(x) paste0(x, "d"))) +
+    
+    # AESTHETIC UPGRADE: Professional divergent color palette (Red-Yellow-Blue)
+    # direction = -1 makes Blue=Low, Red=High.
+    # Crucial: limits = fill_limits ensures independent scaling.
+    scale_fill_distiller(
+      palette = "RdYlBu", 
+      direction = -1, 
+      limits = fill_limits,
+      name = "AR/10K",
+      oob = scales::squish # Handle any tiny floating point overruns gently
+    ) +
+    
+    # Clean Axis Labels based on your shift definition
+    scale_x_discrete(labels = c("-7" = "E7", "-5" = "E5", "-3" = "E3", "0" = "On", 
+                                "3" = "D3", "5" = "D5", "7" = "D7")) +
+    
+    labs(
+      title = current_strain, 
+      x = NULL, 
+      y = NULL
+    ) +
+    
+    # AESTHETIC THEME REFINEMENT
+    theme_minimal(base_size = 10) +
+    theme(
+      # Clean background, remove unnecessary grids
+      panel.grid = element_blank(),
+      # Add light border around facets for definition
+      panel.border = element_rect(color = "gray85", fill = NA, size = 0.5),
+      
+      # Header styling
+      plot.title = element_text(size = 11, face = "bold", hjust = 0.5, margin = margin(b = 3)),
+      # Style the facet strip (duration labels) to look like headers
+      strip.background = element_rect(fill = "#F4F4F4", color = NA),
+      strip.text = element_text(size = 8, face = "bold", color = "gray30"),
+      
+      # Axis Text styling (make smaller and lighter to emphasize data)
+      axis.text.x = element_text(size = 7, angle = 0, color = "gray40"),
+      axis.text.y = element_text(size = 7, color = "gray40"),
+      
+      # Slim Legend Styling to fit nicely alongside individual plots
+      legend.position = "right",
+      legend.title = element_text(size = 7, face = "bold"),
+      legend.text = element_text(size = 6),
+      legend.key.width = unit(0.25, "cm"),
+      legend.key.height = unit(0.6, "cm"),
+      legend.margin = margin(l = 0, r = 0)
+    )
+  
+  return(p)
+}
+
+# ============================================================================
+# FIGURE 16C: HEATMAP for Period 1 (Before Typhoon) - DIRECT OUTPUT
+# ============================================================================
+cat("\n=== Creating Beautified Figure 16C: Attack Rate Heatmap - Period 1 (Screen Output) ===\n")
+
+# 1. Data Preparation (Kept consistent with your original code)
 heatmap_period1_list <- list()
-
 for (dur_idx in 1:4) {
   for (int_idx in 1:10) {
     for (shift_idx in 1:7) {
       scenario_idx <- 1 + (dur_idx-1)*70 + (int_idx-1)*7 + shift_idx
-      
       for (strain_idx in 1:N_strains) {
         heatmap_period1_list[[length(heatmap_period1_list) + 1]] <- data.frame(
           duration = factor(durations[dur_idx], levels = durations),
           intensity = factor(paste0(as.integer(intensities[int_idx]*100), "%")),
           shift = factor(shifts[shift_idx]),
           attack_rate = attack_rate_period1_per10k[scenario_idx, strain_idx],
-          strain = strain_names[strain_idx],
-          stringsAsFactors = FALSE
+          strain = strain_names[strain_idx], stringsAsFactors = FALSE
         )
       }
     }
   }
 }
-
 heatmap_period1_df <- do.call(rbind, heatmap_period1_list)
 heatmap_period1_df$strain <- factor(heatmap_period1_df$strain, levels = strain_names)
+# Ensure intensity factor levels are correctly ordered for the Y-axis
 heatmap_period1_df$intensity <- factor(heatmap_period1_df$intensity, 
-                                       levels = c("-50%", "-30%", "-20%", "-10%", "-5%", 
-                                                  "5%", "10%", "20%", "30%", "50%"))
+                                       levels = c("-50%", "-30%", "-20%", "-10%", "-5%", "5%", "10%", "20%", "30%", "50%"))
 
-p16c_heatmap <- ggplot(heatmap_period1_df, aes(x = shift, y = intensity, fill = attack_rate)) +
-  geom_tile(color = "white", size = 0.5) +
-  geom_text(aes(label = sprintf("%.1f", attack_rate)), size = 1.5, color = "black") +
-  facet_grid(duration ~ strain,
-             labeller = labeller(duration = function(x) paste(x, "days"))) +
-  scale_fill_gradientn(
-    colors = c("#2166AC", "#4393C3", "#92C5DE", "#D1E5F0", "#FDDBC7", "#F4A582", "#D6604D", "#B2182B"),
-    name = "Attack Rate\n(per 10K)",
-    limits = c(min(heatmap_period1_df$attack_rate), max(heatmap_period1_df$attack_rate))
-  ) +
-  scale_x_discrete(labels = c("-7" = "E7", "-5" = "E5", "-3" = "E3", "0" = "On",
-                              "3" = "D3", "5" = "D5", "7" = "D7")) +
-  labs(
-    title = "Attack Rate Heatmap - Period 1 (2025-07-12 to 2025-09-27, Before Typhoon)",
-    subtitle = "Values show attack rate per 10,000 population | Historical data only (same across scenarios)\nColumns: Strains | Rows: Duration | X: Timing | Y: Intensity",
-    x = "Timing Shift (days)",
-    y = "Transmission Change Intensity"
-  ) +
-  theme_minimal(base_size = 10) +
-  theme(
-    panel.grid = element_blank(),
-    panel.border = element_rect(color = "gray30", fill = NA, size = 0.5),
-    strip.text.x = element_text(size = 9, face = "bold"),
-    strip.text.y = element_text(size = 9, face = "bold", angle = 0),
-    strip.background = element_rect(fill = "gray95", color = "gray30", size = 0.5),
-    axis.text.x = element_text(angle = 0, size = 7),
-    axis.text.y = element_text(size = 7),
-    legend.position = "right",
-    plot.title = element_text(size = 12, face = "bold"),
-    plot.subtitle = element_text(size = 8, color = "gray30")
+# 2. Generate Individual Plots with Independent Scales
+p16c_B <- create_aesthetic_heatmap_nosave(heatmap_period1_df, "B")
+p16c_H3 <- create_aesthetic_heatmap_nosave(heatmap_period1_df, "H3")
+p16c_H1 <- create_aesthetic_heatmap_nosave(heatmap_period1_df, "H1")
+p16c_COVID <- create_aesthetic_heatmap_nosave(heatmap_period1_df, "COVID")
+p16c_RSV <- create_aesthetic_heatmap_nosave(heatmap_period1_df, "RSV")
+p16c_HFMD <- create_aesthetic_heatmap_nosave(heatmap_period1_df, "HFMD")
+
+# 3. Combine using Patchwork in a 2x3 grid
+p16c_combined <- (p16c_B | p16c_H3 | p16c_H1) / (p16c_COVID | p16c_RSV | p16c_HFMD) +
+  plot_annotation(
+    title = "Figure 16C: Attack Rate Heatmap - Period 1 (Before Typhoon)",
+    subtitle = "Historical Data Only (Constant across scenarios) | Values: AR per 10K | Independent Color Scale per Strain",
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40", margin = margin(b = 10))
+    )
   )
 
-print(p16c_heatmap)
-ggsave("figure16c_attack_rate_period1_heatmap.png", p16c_heatmap,
-       width = 16, height = 10, dpi = 300, bg = "white")
-
-cat("Figure 16C saved: figure16c_attack_rate_period1_heatmap.png\n\n")
+# 4. DIRECT OUTPUT TO SCREEN (No ggsave)
+print(p16c_combined)
+cat("Figure 16C displayed on screen.\n")
 
 # ============================================================================
-# FIGURE 16D: HEATMAP for Period 2 Attack Rates
-# (2025-07-12 to 2025-10-18 - Including Typhoon + Recovery)
+# FIGURE 16D: HEATMAP for Period 2 (Including Typhoon) - DIRECT OUTPUT
 # ============================================================================
-cat("\n=== Creating Figure 16D: Attack Rate Heatmap - Period 2 (Including Typhoon) ===\n")
+cat("\n=== Creating Beautified Figure 16D: Attack Rate Heatmap - Period 2 (Screen Output) ===\n")
 
-# Prepare heatmap data for Period 2
+# 1. Data Preparation
 heatmap_period2_list <- list()
-
 for (dur_idx in 1:4) {
   for (int_idx in 1:10) {
     for (shift_idx in 1:7) {
       scenario_idx <- 1 + (dur_idx-1)*70 + (int_idx-1)*7 + shift_idx
-      
       for (strain_idx in 1:N_strains) {
         heatmap_period2_list[[length(heatmap_period2_list) + 1]] <- data.frame(
           duration = factor(durations[dur_idx], levels = durations),
           intensity = factor(paste0(as.integer(intensities[int_idx]*100), "%")),
           shift = factor(shifts[shift_idx]),
           attack_rate = attack_rate_period2_per10k[scenario_idx, strain_idx],
-          strain = strain_names[strain_idx],
-          stringsAsFactors = FALSE
+          strain = strain_names[strain_idx], stringsAsFactors = FALSE
         )
       }
     }
   }
 }
-
 heatmap_period2_df <- do.call(rbind, heatmap_period2_list)
 heatmap_period2_df$strain <- factor(heatmap_period2_df$strain, levels = strain_names)
+# Ensure intensity factor levels are correctly ordered
 heatmap_period2_df$intensity <- factor(heatmap_period2_df$intensity, 
-                                       levels = c("-50%", "-30%", "-20%", "-10%", "-5%", 
-                                                  "5%", "10%", "20%", "30%", "50%"))
+                                       levels = c("-50%", "-30%", "-20%", "-10%", "-5%", "5%", "10%", "20%", "30%", "50%"))
 
-p16d_heatmap <- ggplot(heatmap_period2_df, aes(x = shift, y = intensity, fill = attack_rate)) +
-  geom_tile(color = "white", size = 0.5) +
-  geom_text(aes(label = sprintf("%.1f", attack_rate)), size = 1.5, color = "black") +
-  facet_grid(duration ~ strain,
-             labeller = labeller(duration = function(x) paste(x, "days"))) +
-  scale_fill_gradientn(
-    colors = c("#2166AC", "#4393C3", "#92C5DE", "#D1E5F0", "#FDDBC7", "#F4A582", "#D6604D", "#B2182B"),
-    name = "Attack Rate\n(per 10K)",
-    limits = c(min(heatmap_period2_df$attack_rate), max(heatmap_period2_df$attack_rate))
-  ) +
-  scale_x_discrete(labels = c("-7" = "E7", "-5" = "E5", "-3" = "E3", "0" = "On",
-                              "3" = "D3", "5" = "D5", "7" = "D7")) +
-  labs(
-    title = "Attack Rate Heatmap - Period 2 (2025-07-12 to 2025-10-18, Including Typhoon + Recovery)",
-    subtitle = "Values show attack rate per 10,000 population | Includes historical + forecast with scenarios\nColumns: Strains | Rows: Duration | X: Timing | Y: Intensity",
-    x = "Timing Shift (days)",
-    y = "Transmission Change Intensity"
-  ) +
-  theme_minimal(base_size = 10) +
-  theme(
-    panel.grid = element_blank(),
-    panel.border = element_rect(color = "gray30", fill = NA, size = 0.5),
-    strip.text.x = element_text(size = 9, face = "bold"),
-    strip.text.y = element_text(size = 9, face = "bold", angle = 0),
-    strip.background = element_rect(fill = "gray95", color = "gray30", size = 0.5),
-    axis.text.x = element_text(angle = 0, size = 7),
-    axis.text.y = element_text(size = 7),
-    legend.position = "right",
-    plot.title = element_text(size = 12, face = "bold"),
-    plot.subtitle = element_text(size = 8, color = "gray30")
+# 2. Generate Individual Plots with Independent Scales
+p16d_B <- create_aesthetic_heatmap_nosave(heatmap_period2_df, "B")
+p16d_H3 <- create_aesthetic_heatmap_nosave(heatmap_period2_df, "H3")
+p16d_H1 <- create_aesthetic_heatmap_nosave(heatmap_period2_df, "H1")
+p16d_COVID <- create_aesthetic_heatmap_nosave(heatmap_period2_df, "COVID")
+p16d_RSV <- create_aesthetic_heatmap_nosave(heatmap_period2_df, "RSV")
+p16d_HFMD <- create_aesthetic_heatmap_nosave(heatmap_period2_df, "HFMD")
+
+# 3. Combine using Patchwork
+p16d_combined <- (p16d_B | p16d_H3 | p16d_H1) / (p16d_COVID | p16d_RSV | p16d_HFMD) +
+  plot_annotation(
+    title = "Figure 16D: Attack Rate Heatmap - Period 2 (Including Typhoon)",
+    subtitle = "Forecast Data with Scenarios | Values: AR per 10K | Blue: Low, Red: High | Independent Color Scale per Strain",
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray40", margin = margin(b = 10))
+    )
   )
 
-print(p16d_heatmap)
-ggsave("figure16d_attack_rate_period2_heatmap.png", p16d_heatmap,
-       width = 16, height = 10, dpi = 300, bg = "white")
+# 4. DIRECT OUTPUT TO SCREEN (No ggsave)
+print(p16d_combined)
+cat("Figure 16D displayed on screen.\n")
+cat("\nVisualization complete. No files were saved.\n")cat("\nVisualizations complete. High contrast palettes applied for clear trend visibility.\n")
 
-cat("Figure 16D saved: figure16d_attack_rate_period2_heatmap.png\n\n")
-
-# ============================================================================
-# CREATE SUMMARY TABLES FOR ATTACK RATES
-# ============================================================================
-cat("\n=== Creating Attack Rate Summary Tables ===\n")
-
+cat("\nDone: Figure 16C uses Viridis, Figure 16D uses RdYlBu.\n")
+cat("\nVisualizations displayed. Using 'Viridis' and 'Magma' palettes for maximum clarity.\n")
 # Period 1 Summary
 period1_summary <- data.frame(
   Strain = rep(strain_names, each = 281),
