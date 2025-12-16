@@ -81,7 +81,7 @@ parameters {
   vector<lower=0,upper=0.05>[N_strains] mu;
   
   vector<lower=0,upper=1>[5] detection_rate;
-  real<lower=0.1,upper=1> hospitalization_rate;
+  real<lower=0,upper=1> hospitalization_rate;
   vector<lower=0>[N_strains] phi;
 }
 
